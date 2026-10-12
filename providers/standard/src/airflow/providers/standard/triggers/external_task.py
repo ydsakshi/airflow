@@ -192,7 +192,7 @@ class WorkflowTrigger(BaseTrigger):
                 kwargs = {
                     "dag_id": self.external_dag_id,
                     "logical_dates": self.logical_dates,
-                    "run_ids": self.run_ids
+                    "run_ids": self.run_ids,
                 }
                 if self.external_task_group_id:
                     kwargs["task_group_id"] = self.external_task_group_id
@@ -202,19 +202,24 @@ class WorkflowTrigger(BaseTrigger):
                 run_id_map = await sync_to_async(RuntimeTaskInstance.get_task_states)(**kwargs)
             else:
                 run_id_map = await sync_to_async(RuntimeTaskInstance.get_dag_states)(
-                    dag_id=self.external_dag_id,
-                    logical_dates=self.logical_dates,
-                    run_ids=self.run_ids
+                    dag_id=self.external_dag_id, logical_dates=self.logical_dates, run_ids=self.run_ids
                 )
             return next(iter(run_id_map.keys()), None) if run_id_map else None
-        else:
-            from airflow.models import DagRun
+        from airflow.models import DagRun
 
-            dag_run = await sync_to_async(lambda: self._session.query(DagRun).filter(
-                DagRun.dag_id == self.external_dag_id,
-            ).order_by(DagRun.logical_date.desc()).first())()
-            
-            return dag_run.run_id if dag_run else None
+        dag_run = await sync_to_async(
+            lambda: (
+                self._session.query(DagRun)
+                .filter(
+                    DagRun.dag_id == self.external_dag_id,
+                )
+                .order_by(DagRun.logical_date.desc())
+                .first()
+            )
+        )()
+
+        return dag_run.run_id if dag_run else None
+
 
 class DagStateTrigger(BaseTrigger):
     """

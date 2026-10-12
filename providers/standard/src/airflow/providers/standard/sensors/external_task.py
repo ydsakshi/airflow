@@ -69,6 +69,7 @@ if TYPE_CHECKING:
 
 XCOM_EXTERNAL_RUN_ID = "external_run_id"
 
+
 class ExternalDagLink(BaseOperatorLink):
     """
     Operator link for ExternalTaskSensor and ExternalTaskMarker.
@@ -379,7 +380,7 @@ class ExternalTaskSensor(BaseSensorOperator):
                 )
                 external_run_ids.update(run_id_task_state_map)
                 return _get_count_by_matched_states(run_id_task_state_map, states)
-            
+
             run_id_dr_state_map = ti.get_dag_states(
                 dag_id=self.external_dag_id,
                 logical_dates=list(dttm_filter),
@@ -492,14 +493,19 @@ class ExternalTaskSensor(BaseSensorOperator):
                     from airflow.models import DagRun, TaskInstance
 
                     for logical_date in dttm_filter:
-                        dag_run = session.query(DagRun).filter(
-                            DagRun.dag_id == self.external_dag_id,
-                            DagRun.logical_date == logical_date
-                            ).first()
-                        if dag_run:
-                            ti = session.query(TaskInstance).filter_by(
-                            dag_id=self.dag_id, run_id=self.run_id, task_id=self.task_id)
+                        dag_run = (
+                            session.query(DagRun)
+                            .filter(
+                                DagRun.dag_id == self.external_dag_id, DagRun.logical_date == logical_date
+                            )
                             .first()
+                        )
+                        if dag_run:
+                            ti = (
+                                session.query(TaskInstance)
+                                .filter_by(dag_id=self.dag_id, run_id=self.run_id, task_id=self.task_id)
+                                .first()
+                            )
                             if ti:
                                 ti.xcom_push(key=XCOM_EXTERNAL_RUN_ID, value=dag_run.run_id)
                             break
