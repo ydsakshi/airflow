@@ -67,6 +67,8 @@ if TYPE_CHECKING:
     from airflow.providers.common.compat.sdk import Context, TaskInstanceKey
 
 
+XCOM_EXTERNAL_RUN_ID = "external_run_id"
+
 class ExternalDagLink(BaseOperatorLink):
     """
     Operator link for ExternalTaskSensor and ExternalTaskMarker.
@@ -75,10 +77,6 @@ class ExternalDagLink(BaseOperatorLink):
     """
 
     name = "External DAG"
-
-    @property
-    def xcom_key(self) -> str:
-        return "_external_run_id"
 
     def get_link(self, operator: BaseOperator, *, ti_key: TaskInstanceKey) -> str:
         if TYPE_CHECKING:
@@ -101,7 +99,7 @@ class ExternalDagLink(BaseOperatorLink):
             if template_fields := RenderedTaskInstanceFields.get_templated_fields(core_ti_key):
                 external_dag_id: str = template_fields.get("external_dag_id", operator.external_dag_id)  # type: ignore[no-redef]
 
-        external_run_id = XCom.get_value(key=self.xcom_key, ti_key=ti_key) or ti_key.run_id
+        external_run_id = XCom.get_value(key=XCOM_EXTERNAL_RUN_ID, ti_key=ti_key) or ti_key.run_id
 
         if AIRFLOW_V_3_0_PLUS:
             from airflow.utils.helpers import build_airflow_dagrun_url
@@ -355,40 +353,38 @@ class ExternalTaskSensor(BaseSensorOperator):
             return self._poke_af3(context, dttm_filter)
         return self._poke_af2(context, dttm_filter)
 
-    def _push_external_run_ids_to_xcom(
-        self, context: Context, dttm_filter: Sequence[datetime.datetime]
-    ) -> None:
-        try:
-            if dttm_filter:
-                logical_date = dttm_filter[0]
-                external_run_id = f"scheduled__{logical_date.isoformat()}"
-
-                ti = context.get("ti")
-                ti.xcom_push(key=ExternalDagLink().xcom_key, value=external_run_id)
-        except Exception:
-            self.log.exception("Failed to push external run_id to XCom.")
-
     def _poke_af3(self, context: Context, dttm_filter: Sequence[datetime.datetime]) -> bool:
         from airflow.providers.standard.utils.sensor_helper import _get_count_by_matched_states
 
         self._has_checked_existence = True
         ti = context["ti"]
+        external_run_ids = {}
 
         def _get_count(states: list[str]) -> int:
+            nonlocal external_run_ids
             if self.external_task_ids:
-                return ti.get_ti_count(
+                run_id_task_state_map = ti.get_task_states(
                     dag_id=self.external_dag_id,
                     task_ids=list(self.external_task_ids),
                     logical_dates=list(dttm_filter),
                     states=states,
                 )
+                external_run_ids.update(run_id_task_state_map)
+                return _get_count_by_matched_states(run_id_task_state_map, states)
             if self.external_task_group_id:
                 run_id_task_state_map = ti.get_task_states(
                     dag_id=self.external_dag_id,
                     task_group_id=self.external_task_group_id,
                     logical_dates=list(dttm_filter),
                 )
+                external_run_ids.update(run_id_task_state_map)
                 return _get_count_by_matched_states(run_id_task_state_map, states)
+            
+            run_id_dr_state_map = ti.get_dag_states(
+                dag_id=self.external_dag_id,
+                logical_dates=list(dttm_filter),
+            )
+            external_run_ids.update(run_id_dr_state_map)
             return ti.get_dr_count(
                 dag_id=self.external_dag_id,
                 logical_dates=list(dttm_filter),
@@ -408,7 +404,12 @@ class ExternalTaskSensor(BaseSensorOperator):
         count = _get_count(self.allowed_states)
         count_allowed = self._calculate_count(count, dttm_filter)
         if count_allowed == len(dttm_filter):
-            self._push_external_run_ids_to_xcom(context, dttm_filter)
+            if external_run_ids:
+                try:
+                    external_run_id = next(iter(external_run_ids.keys()))
+                    ti.xcom_push(key=XCOM_EXTERNAL_RUN_ID, value=external_run_id)
+                except Exception:
+                    self.log.exception("Failed to push external run_id to XCom.")
             return True
         return False
 
@@ -470,7 +471,6 @@ class ExternalTaskSensor(BaseSensorOperator):
         @provide_session
         def _poke_af2(
             self,
-            context: Context,
             dttm_filter: Sequence[datetime.datetime],
             *,
             session: Session = NEW_SESSION,
@@ -488,7 +488,23 @@ class ExternalTaskSensor(BaseSensorOperator):
 
             count_allowed = self.get_count(dttm_filter, session, self.allowed_states)
             if count_allowed == len(dttm_filter):
-                self._push_external_run_ids_to_xcom(context, dttm_filter)
+                try:
+                    from airflow.models import DagRun, TaskInstance
+
+                    for logical_date in dttm_filter:
+                        dag_run = session.query(DagRun).filter(
+                            DagRun.dag_id == self.external_dag_id,
+                            DagRun.logical_date == logical_date
+                            ).first()
+                        if dag_run:
+                            ti = session.query(TaskInstance).filter_by(
+                            dag_id=self.dag_id, run_id=self.run_id, task_id=self.task_id)
+                            .first()
+                            if ti:
+                                ti.xcom_push(key=XCOM_EXTERNAL_RUN_ID, value=dag_run.run_id)
+                            break
+                except Exception:
+                    self.log.exception("Failed to push external run_id to XCom.")
                 return True
             return False
 
@@ -557,6 +573,12 @@ class ExternalTaskSensor(BaseSensorOperator):
 
         if event["status"] == "success":
             self.log.info("External tasks %s has executed successfully.", self.external_task_ids)
+            if "run_id" in event:
+                try:
+                    ti = context["ti"]
+                    ti.xcom_push(key=XCOM_EXTERNAL_RUN_ID, value=event["run_id"])
+                except Exception:
+                    self.log.exception("Failed to push external run_id to XCom.")
         elif event["status"] == "skipped":
             raise AirflowSkipException("External job has skipped skipping.")
         elif event["status"] == "failed":
