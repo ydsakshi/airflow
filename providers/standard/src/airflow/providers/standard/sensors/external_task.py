@@ -405,7 +405,7 @@ class ExternalTaskSensor(BaseSensorOperator):
         if count_allowed == len(dttm_filter):
             if external_run_ids:
                 try:
-                    external_run_id = next(iter(external_run_ids.values()))
+                    external_run_id = next(iter(external_run_ids.keys()))
                     ti.xcom_push(key=XCOM_EXTERNAL_RUN_ID, value=external_run_id)
                 except Exception:
                     self.log.exception("Failed to push external run_id to XCom.")
