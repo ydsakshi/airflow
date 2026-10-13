@@ -368,7 +368,6 @@ class ExternalTaskSensor(BaseSensorOperator):
                     dag_id=self.external_dag_id,
                     task_ids=list(self.external_task_ids),
                     logical_dates=list(dttm_filter),
-                    states=states,
                 )
                 external_run_ids.update(run_id_task_state_map)
                 return _get_count_by_matched_states(run_id_task_state_map, states)
@@ -381,9 +380,8 @@ class ExternalTaskSensor(BaseSensorOperator):
                 external_run_ids.update(run_id_task_state_map)
                 return _get_count_by_matched_states(run_id_task_state_map, states)
 
-            run_id_dr_state_map = ti.get_dag_states(
-                dag_id=self.external_dag_id,
-                logical_dates=list(dttm_filter),
+            run_id_dr_state_map = ti.get_task_states(
+                dag_id=self.external_dag_id, logical_dates=list(dttm_filter)
             )
             external_run_ids.update(run_id_dr_state_map)
             return ti.get_dr_count(
@@ -407,7 +405,7 @@ class ExternalTaskSensor(BaseSensorOperator):
         if count_allowed == len(dttm_filter):
             if external_run_ids:
                 try:
-                    external_run_id = next(iter(external_run_ids.keys()))
+                    external_run_id = next(iter(external_run_ids.values()))
                     ti.xcom_push(key=XCOM_EXTERNAL_RUN_ID, value=external_run_id)
                 except Exception:
                     self.log.exception("Failed to push external run_id to XCom.")
@@ -490,22 +488,22 @@ class ExternalTaskSensor(BaseSensorOperator):
             count_allowed = self.get_count(dttm_filter, session, self.allowed_states)
             if count_allowed == len(dttm_filter):
                 try:
+                    from sqllalchemy import select
+
                     from airflow.models import DagRun, TaskInstance
 
                     for logical_date in dttm_filter:
-                        dag_run = (
-                            session.query(DagRun)
-                            .filter(
-                                DagRun.dag_id == self.external_dag_id, DagRun.logical_date == logical_date
-                            )
-                            .first()
+                        dag_run_stmt = select(DagRun).where(
+                            DagRun.dag_id == self.external_dag_id, DagRun.logical_date == logical_date
                         )
+                        dag_run = session.execute(dag_run_stmt).scalars().first()
                         if dag_run:
-                            ti = (
-                                session.query(TaskInstance)
-                                .filter_by(dag_id=self.dag_id, run_id=self.run_id, task_id=self.task_id)
-                                .first()
+                            ti_stmt = select(TaskInstance).where(
+                                TaskInstance.dag_id == self.dag_id,
+                                TaskInstance.run_id == self.run_id,
+                                TaskInstance.task_id == self.task_id,
                             )
+                            ti = session.execute(ti_stmt).scalars().first()
                             if ti:
                                 ti.xcom_push(key=XCOM_EXTERNAL_RUN_ID, value=dag_run.run_id)
                             break

@@ -210,8 +210,7 @@ class WorkflowTrigger(BaseTrigger):
                 )
 
             return next(iter(run_id_map.keys())) if run_id_map else None
-        else:
-            return await self._get_matched_run_id_af2()
+        return await self._get_matched_run_id_af2()
 
     if not AIRFLOW_V_3_0_PLUS:
         from airflow.utils.session import NEW_SESSION, provide_session  # type: ignore[misc]
@@ -220,9 +219,14 @@ class WorkflowTrigger(BaseTrigger):
         @provide_session
         def _get_matched_run_id_af2(self, *, session: Session = NEW_SESSION) -> str | None:
             """Get the first matched run_id for AF2."""
-            dag_run = session.query(DagRun).filter(
-                DagRun.dag_id == self.external_dag_id,
-            ).order_by(DagRun.logical_date.desc()).first()
+            stmt = (
+                select(DagRun)
+                .where(
+                    DagRun.dag_id == self.external_dag_id,
+                )
+                .order_by(DagRun.logical_date.desc())
+            )
+            dag_run = session.execute(stmt).scalars().first()
             return dag_run.run_id if dag_run else None
 
 
